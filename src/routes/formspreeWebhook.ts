@@ -31,8 +31,23 @@ export interface FormspreePayload {
 }
 
 const router = Router();
+const IP_WINDOW_MS = 10 * 60 * 1000;
+const IP_MAX_REQUESTS = 5;
+const CONTACT_COOLDOWN_MS = 30 * 1000;
+const ipRateLimitStore = new Map<string, number[]>();
+const contactCooldownStore = new Map<string, number>();
 
 router.post("/", async (req, res) => {
+  const requesterIp = readRequesterIp(req.headers, req.ip);
+  if (isIpRateLimited(requesterIp)) {
+    res.status(429).json({
+      error: "rate_limited",
+      message:
+        "Too many form submissions from this IP. Please try again later.",
+    });
+    return;
+  }
+
   const payload = req.body as FormspreePayload;
   const normalizedFormId = normalizeFormId(payload);
   if (!normalizedFormId || normalizedFormId !== env.FORMSPREE_FORM_ID) {
@@ -50,6 +65,18 @@ router.post("/", async (req, res) => {
       message: "Payload must include at least email or phone",
     });
     return;
+  }
+  const contactKey = buildContactCooldownKey(leadInput.email, leadInput.phone);
+  if (contactKey && isContactCoolingDown(contactKey)) {
+    res.status(429).json({
+      error: "contact_cooldown",
+      message:
+        "We just received this contact. Please wait before submitting again.",
+    });
+    return;
+  }
+  if (contactKey) {
+    markContactSubmission(contactKey);
   }
 
   const eventId = resolveEventId(req.headers, payload);
@@ -200,6 +227,84 @@ function readFirstString(...values: Array<unknown>): string | undefined {
     }
   }
   return undefined;
+}
+
+function readRequesterIp(
+  headers: Record<string, unknown>,
+  requestIp?: string,
+): string {
+  const forwarded = headers["x-forwarded-for"];
+  if (typeof forwarded === "string" && forwarded.trim().length > 0) {
+    return forwarded.split(",")[0]?.trim() || "unknown";
+  }
+  if (Array.isArray(forwarded) && typeof forwarded[0] === "string") {
+    return forwarded[0].split(",")[0]?.trim() || "unknown";
+  }
+  return requestIp?.trim() || "unknown";
+}
+
+function isIpRateLimited(ip: string): boolean {
+  const now = Date.now();
+  const existing = ipRateLimitStore.get(ip) ?? [];
+  const recent = existing.filter((timestamp) => now - timestamp < IP_WINDOW_MS);
+  if (recent.length >= IP_MAX_REQUESTS) {
+    ipRateLimitStore.set(ip, recent);
+    return true;
+  }
+  recent.push(now);
+  ipRateLimitStore.set(ip, recent);
+  cleanupIpStore(now);
+  return false;
+}
+
+function cleanupIpStore(now: number): void {
+  for (const [ip, timestamps] of ipRateLimitStore.entries()) {
+    const recent = timestamps.filter(
+      (timestamp) => now - timestamp < IP_WINDOW_MS,
+    );
+    if (recent.length === 0) {
+      ipRateLimitStore.delete(ip);
+      continue;
+    }
+    if (recent.length !== timestamps.length) {
+      ipRateLimitStore.set(ip, recent);
+    }
+  }
+}
+
+function buildContactCooldownKey(
+  email?: string,
+  phone?: string,
+): string | null {
+  if (phone) {
+    return `phone:${phone}`;
+  }
+  if (email) {
+    return `email:${email.trim().toLowerCase()}`;
+  }
+  return null;
+}
+
+function isContactCoolingDown(contactKey: string): boolean {
+  const lastSeen = contactCooldownStore.get(contactKey);
+  if (!lastSeen) {
+    return false;
+  }
+  return Date.now() - lastSeen < CONTACT_COOLDOWN_MS;
+}
+
+function markContactSubmission(contactKey: string): void {
+  const now = Date.now();
+  contactCooldownStore.set(contactKey, now);
+  cleanupContactStore(now);
+}
+
+function cleanupContactStore(now: number): void {
+  for (const [contactKey, lastSeen] of contactCooldownStore.entries()) {
+    if (now - lastSeen >= CONTACT_COOLDOWN_MS) {
+      contactCooldownStore.delete(contactKey);
+    }
+  }
 }
 
 export default router;
