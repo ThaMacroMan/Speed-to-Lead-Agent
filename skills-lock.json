@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "skills": {
+    "ai-evals": {
+      "source": "refoundai/lenny-skills",
+      "sourceType": "github",
+      "computedHash": "38bfd4038f2cc53546774358ba4dc0c03d5c00077b596149b05896292d601560"
+    },
+    "docker-expert": {
+      "source": "sickn33/antigravity-awesome-skills",
+      "sourceType": "github",
+      "computedHash": "76bd52d934142cb8f3861cb37f2a39ad93bf3b03dcbc94a02beaa0544f6dd7c2"
+    }
+  }
+}
